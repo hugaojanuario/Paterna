@@ -1,10 +1,12 @@
 #!/usr/bin/env sh
 # Paterna installer
 # uso: curl -fsSL https://raw.githubusercontent.com/hugaojanuario/Paterna/main/install.sh | sh
+#      curl -fsSL https://.../install.sh | sh -s -- v0.2.1   (versão específica)
 set -e
 
 REPO="hugaojanuario/Paterna"
 BIN_NAME="paterna"
+VERSION="${1:-latest}"
 
 red()   { printf '\033[31m%s\033[0m\n' "$1"; }
 green() { printf '\033[32m%s\033[0m\n' "$1"; }
@@ -48,32 +50,24 @@ fi
 
 info "OS:      $OS"
 info "Arch:    $ARCH"
+info "Versão:  $VERSION"
 info "Destino: $INSTALL_DIR"
 
-# pega tag da última release
-info "Buscando última release..."
-VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-    | grep '"tag_name":' \
-    | head -n 1 \
-    | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')
-
-if [ -z "$VERSION" ]; then
-    red "Não consegui descobrir a última versão do Paterna."
-    exit 1
-fi
-
-info "Versão: $VERSION"
-
-# baixa tarball
+# monta URL — usa redirect direto, sem chamar a API do GitHub
 TARBALL="paterna_${OS}_${ARCH}.tar.gz"
-URL="https://github.com/$REPO/releases/download/$VERSION/$TARBALL"
+if [ "$VERSION" = "latest" ]; then
+    URL="https://github.com/$REPO/releases/latest/download/$TARBALL"
+else
+    URL="https://github.com/$REPO/releases/download/$VERSION/$TARBALL"
+fi
 
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 info "Baixando $URL..."
-if ! curl -fsSL "$URL" -o "$TMP_DIR/$TARBALL"; then
+if ! curl -fsSL --connect-timeout 10 --max-time 120 "$URL" -o "$TMP_DIR/$TARBALL"; then
     red "Falha ao baixar $URL"
+    red "Confira se a release existe em: https://github.com/$REPO/releases"
     exit 1
 fi
 
@@ -108,4 +102,4 @@ esac
 
 printf '\n'
 "$INSTALL_DIR/$BIN_NAME" version || true
-printf '\nRode: %s\n' "$BIN_NAME"
+printf '\nRode: %s init\n' "$BIN_NAME"
