@@ -1,62 +1,53 @@
 package commands
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"os"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 )
 
 var coisoCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Configuração inicial",
-	Run:   upDocker,
+	Short: "Inicialização do Paterna: cria conta admin e prepara o ambiente",
+	Long: `O comando init é a primeira coisa que você deve rodar após instalar o Paterna.
+Ele pede um email e senha para criar sua conta admin, gera um token de sessão
+e habilita o uso do Paterna no seu computador. Sem rodar 'paterna init', o
+comando 'paterna' fica bloqueado por segurança.`,
+	Run: runInit,
 }
 
 func init() {
 	rootCmd.AddCommand(coisoCmd)
 }
 
-func upDocker(cmd *cobra.Command, args []string) {
-
-	if !validateToken() {
-		fmt.Println("use 'paterna auth --login' ou 'paterna auth --register'")
+func runInit(cmd *cobra.Command, args []string) {
+	if isInitialized() {
+		fmt.Println("Paterna já está inicializado neste computador.")
+		fmt.Println("Se quiser reautenticar use: paterna auth --login")
 		return
 	}
 
-	fmt.Println("Subindo o docker...")
-	cli, err := client.NewClientWithOpts(
-		client.FromEnv,
-		client.WithAPIVersionNegotiation(),
-	)
-	if err != nil {
-		panic(err)
+	fmt.Println("Bem-vindo ao Paterna!")
+	fmt.Println("Vamos criar sua conta admin para liberar o uso da ferramenta.")
+	fmt.Println()
+
+	// register vive em auth.go (mesmo pacote): cria usuário + token
+	register()
+
+	// só marca como inicializado se realmente existe token válido
+	if !validateToken() {
+		fmt.Println()
+		fmt.Println("Inicialização não concluída. Rode 'paterna init' novamente.")
+		return
 	}
 
-	reader, err := cli.ImagePull(context.Background(), "https://hub.docker.com/r/devhugojanuario/paterna", image.PullOptions{})
-	if err != nil {
-		panic(err)
-	}
-	defer reader.Close()
-
-	io.Copy(os.Stdout, reader)
-
-	resp, err := cli.ContainerCreate(context.Background(), &container.Config{
-		Image: "Paterna:latest",
-	}, nil, nil, nil, "Paterna")
-
-	if err != nil {
-		panic(err)
+	if err := markInitialized(); err != nil {
+		fmt.Fprintln(os.Stderr, "erro ao marcar inicialização:", err)
+		return
 	}
 
-	if err := cli.ContainerStart(context.Background(), resp.ID, container.StartOptions{}); err != nil {
-		panic(err)
-	}
-
-	fmt.Println("Docker subiu com sucesso!")
+	fmt.Println()
+	fmt.Println("Paterna inicializado com sucesso!")
+	fmt.Println("Agora rode: paterna")
 }
