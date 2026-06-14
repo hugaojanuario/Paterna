@@ -1,0 +1,38 @@
+<script>
+	import "./globals.css";
+	import "./lib/store.ts";
+	import "./lib/api.ts";
+	import { Home } from "./pages/home/index.pierrot"
+	import { Login } from "./pages/login/index.pierrot";
+	import { Errors } from "./pages/errors/index.pierrot";
+	import { Header } from "./components/header/index.pierrot";
+	import { Sidebar } from "./components/sidebar/index.pierrot";
+
+	set.Title("Paterna");
+	set.Description("Container observability and management");
+	set.Charset("UTF-8");
+	set.Icon("./assets/favicon.ico");
+	set.Robots("./assets/robots.txt");
+	set.Default(Home);
+	set.Fallback(Errors);
+
+	document.documentElement.setAttribute("data-theme", "dark");
+
+	let appAuth: boolean = userIsAuth();
+	let appPath: string = window.location.pathname;
+	let appIsLogin: boolean = appPath === "/login";
+
+	if (!appAuth && !appIsLogin) {
+		client.Redirect("/login");
+	}
+
+	if (appAuth) {
+		document.body.classList.add("authenticated");
+	}
+</script>
+
+@if appAuth == true
+	<Header />
+	<Sidebar />
+@endif
+<Slot />
