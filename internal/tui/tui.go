@@ -5,7 +5,7 @@ import (
 )
 
 func Run() error {
-	p := tea.NewProgram(NewContainersModel(), tea.WithAltScreen())
+	p := tea.NewProgram(NewWelcomeModel(), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

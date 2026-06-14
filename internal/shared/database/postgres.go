@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/hugaojanuario/Patena/internal/shared/config"
+	"github.com/hugaojanuario/Paterna/internal/shared/config"
 	_ "github.com/lib/pq"
 )
 

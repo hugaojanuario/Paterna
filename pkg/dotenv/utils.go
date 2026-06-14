@@ -16,16 +16,9 @@ func load() {
 			return
 		}
 	}
-
-	panic(".env não encontrado")
+	// .env opcional: binário instalado via curl não tem .env no pwd
 }
 
 func get(envname string) string {
-	tmp := os.Getenv(envname)
-
-	if tmp == "" {
-		panic("dotenv: " + envname + " is not set")
-	}
-
-	return tmp
+	return os.Getenv(envname)
 }

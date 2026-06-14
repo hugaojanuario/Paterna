@@ -34,3 +34,15 @@ go.work.sum
 #ias
 .claude
 .DS_Store
+
+# SQLite local
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Build artifacts
+/dist/
+/bin/
+/paterna
+/cli
