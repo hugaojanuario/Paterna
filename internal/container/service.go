@@ -209,6 +209,21 @@ func StreamContainerLogs(id string) (io.ReadCloser, error) {
 	return reader, nil
 }
 
+// ComputeUsage transforma estatísticas brutas do Docker em valores prontos
+// para exibição: cpu em %, memória usada em MB e limite em MB.
+func ComputeUsage(s ContainerStats) (cpu, memMB, memLimitMB float64) {
+	cpuDelta := float64(s.CpuStats.CpuUsage.TotalUsage) - float64(s.PreCpuStats.CpuUsage.TotalUsage)
+	sysDelta := float64(s.CpuStats.SystemCpuUsage) - float64(s.PreCpuStats.SystemCpuUsage)
+
+	if sysDelta > 0 && cpuDelta > 0 && s.CpuStats.OnlineCpus > 0 {
+		cpu = (cpuDelta / sysDelta) * float64(s.CpuStats.OnlineCpus) * 100.0
+	}
+
+	memMB = float64(s.MemoryStats.Usage) / 1024.0 / 1024.0
+	memLimitMB = float64(s.MemoryStats.Limit) / 1024.0 / 1024.0
+	return
+}
+
 func InspectContainer(id string) (ContainerState, error) {
 	cl, err := docker.GetClient()
 	if err != nil {
