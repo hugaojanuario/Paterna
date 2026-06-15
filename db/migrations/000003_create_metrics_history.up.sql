@@ -1,8 +1,8 @@
 CREATE TABLE IF NOT EXISTS metrics_history (
-    id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    container_id   VARCHAR(255) NOT NULL,
-    container_name VARCHAR(255) NOT NULL,
-    cpu_percent    NUMERIC(5, 2) NOT NULL,
-    memory_mb      NUMERIC(10, 2) NOT NULL,
-    collected_at   TIMESTAMP NOT NULL DEFAULT NOW()
+    id             TEXT PRIMARY KEY,
+    container_id   TEXT NOT NULL,
+    container_name TEXT NOT NULL,
+    cpu_percent    REAL NOT NULL,
+    memory_mb      REAL NOT NULL,
+    collected_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
