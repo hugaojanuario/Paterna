@@ -1,10 +1,14 @@
 package api
 
 import (
+	"bufio"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/hugaojanuario/Paterna/internal/container"
 	errorsx "github.com/hugaojanuario/Paterna/pkg/errors"
 )
@@ -64,6 +68,53 @@ func handleRestartContainer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "restarted", "id": id})
+}
+
+func handleContainerLogsStream(w http.ResponseWriter, r *http.Request) {
+	id := pathID(r.URL.Path, "/containers/", "/logs/stream")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "missing container id")
+		return
+	}
+
+	reader, err := container.StreamContainerLogs(id)
+	if err != nil {
+		writeContainerError(w, err)
+		return
+	}
+	defer reader.Close()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ctx := r.Context()
+
+	pr, pw := io.Pipe()
+
+	go func() {
+		defer pw.Close()
+		stdcopy.StdCopy(pw, pw, reader)
+	}()
+
+	scanner := bufio.NewScanner(pr)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			fmt.Fprintf(w, "data: %s\n\n", scanner.Text())
+			flusher.Flush()
+		}
+	}
 }
 
 func handleContainerLogs(w http.ResponseWriter, r *http.Request) {

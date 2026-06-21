@@ -27,6 +27,8 @@ func routeContainerByID(w http.ResponseWriter, r *http.Request) {
 		handleStopContainer(w, r)
 	case strings.HasSuffix(path, "/restart") && r.Method == http.MethodPost:
 		handleRestartContainer(w, r)
+	case strings.HasSuffix(path, "/logs/stream") && r.Method == http.MethodGet:
+		handleContainerLogsStream(w, r)
 	case strings.HasSuffix(path, "/logs") && r.Method == http.MethodGet:
 		handleContainerLogs(w, r)
 	case strings.HasSuffix(path, "/stats") && r.Method == http.MethodGet:
