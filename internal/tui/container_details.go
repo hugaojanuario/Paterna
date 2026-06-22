@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/hugaojanuario/Paterna/internal/container"
 )
 
@@ -22,7 +21,8 @@ type detailsLoadedMsg struct {
 }
 
 type logStreamReadyMsg struct {
-	ch chan string
+	ch     chan string
+	cancel context.CancelFunc
 }
 
 type logLineMsg struct {
@@ -92,10 +92,14 @@ func (m ContainerDetailsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case logStreamReadyMsg:
 		m.logCh = msg.ch
+		m.cancel = msg.cancel
 		return m, waitForLogLine(msg.ch)
 
 	case logLineMsg:
 		if !msg.ok {
+			m.logs = append(m.logs, "(stream encerrado)")
+			m.viewport.SetContent(strings.Join(m.logs, "\n"))
+			m.viewport.GotoBottom()
 			return m, nil
 		}
 		m.logs = append(m.logs, msg.line)
@@ -276,40 +280,44 @@ func loadDetails(id string) tea.Cmd {
 
 func startLogStream(id string) tea.Cmd {
 	return func() tea.Msg {
-		rc, err := container.StreamContainerLogs(id)
+		ctx, cancel := context.WithCancel(context.Background())
+
+		rc, err := apiClient.StreamLogs(ctx, id)
 		if err != nil {
+			cancel()
 			return logStreamErrMsg{err: err}
 		}
 
-		ctx, cancel := context.WithCancel(context.Background())
 		ch := make(chan string, 64)
-
 		go pumpLogs(ctx, rc, ch)
 
-		_ = cancel // cancel ainda não está conectado ao model
-
-		return logStreamReadyMsg{ch: ch}
+		return logStreamReadyMsg{ch: ch, cancel: cancel}
 	}
 }
 
-// pumpLogs demuxa logs do Docker e empurra linhas no channel até EOF/cancel
+// pumpLogs lê SSE do daemon (data: <linha>\n\n), descarta prefixo
+// e empurra cada linha no canal até EOF/cancel
 func pumpLogs(ctx context.Context, rc io.ReadCloser, ch chan<- string) {
 	defer close(ch)
 	defer rc.Close()
 
-	pr, pw := io.Pipe()
-	go func() {
-		defer pw.Close()
-		_, _ = stdcopy.StdCopy(pw, pw, rc)
-	}()
-
-	scanner := bufio.NewScanner(pr)
+	scanner := bufio.NewScanner(rc)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
 	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+
 		select {
 		case <-ctx.Done():
 			return
-		case ch <- scanner.Text():
+		case ch <- payload:
 		}
 	}
 }
