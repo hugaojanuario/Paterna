@@ -11,18 +11,21 @@ import (
 	"github.com/hugaojanuario/Paterna/internal/system"
 )
 
-const histLen = 60
+const histLen = 120
 
-// cores do tema
+// paleta do tema (dark, estilo btop)
 const (
-	colBorder = "#3A3A4A"
-	colTitle  = "#7AA9FF"
-	colDim    = "#8B8FA8"
+	colBorder = "#2C2C3A"
+	colDim    = "#6C7086"
+	colText   = "#CDD6F4"
 	colGreen  = "#00C875"
 	colYellow = "#FFB020"
 	colRed    = "#FF5757"
 	colCyan   = "#36D7E0"
+	colBlue   = "#5B8DFF"
+	colPurple = "#B47AFF"
 	colPink   = "#FF5BB0"
+	colEmpty  = "#23232F"
 )
 
 type dashboardDataMsg struct {
@@ -37,8 +40,10 @@ type DashboardModel struct {
 	containers []container.ContainerInfo
 	dockerErr  error
 
-	cpuHist []float64
-	memHist []float64
+	cpuHist  []float64
+	memHist  []float64
+	recvHist []float64
+	sentHist []float64
 
 	width  int
 	height int
@@ -74,6 +79,8 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dockerErr = msg.dockerErr
 		m.cpuHist = pushHist(m.cpuHist, msg.snap.CPUTotal)
 		m.memHist = pushHist(m.memHist, msg.snap.MemPercent)
+		m.recvHist = pushHist(m.recvHist, msg.snap.NetRecvRate)
+		m.sentHist = pushHist(m.sentHist, msg.snap.NetSentRate)
 		return m, nil
 
 	case tickMsg:
@@ -100,178 +107,210 @@ func pushHist(h []float64, v float64) []float64 {
 	return h
 }
 
+// ============================ View ============================
+
 func (m DashboardModel) View() string {
 	width := m.width
 	if width <= 0 {
 		width = 120
 	}
 
-	leftW := width * 6 / 10
+	leftW := width * 62 / 100
 	rightW := width - leftW
 
-	cpuBox := m.renderCPU(leftW)
-	memBox := m.renderMem(rightW)
-	topRow := lipgloss.JoinHorizontal(lipgloss.Top, cpuBox, memBox)
+	var out []string
+	out = append(out, m.renderTopline(width))
 
-	diskBox := m.renderDisks(leftW)
-	netBox := m.renderNet(rightW)
-	midRow := lipgloss.JoinHorizontal(lipgloss.Top, diskBox, netBox)
+	// linha 1: CPU | MEM
+	cpu := boxSpec{1, "cpu", colCyan, m.cpuLines(innerWidth(leftW))}
+	mem := boxSpec{2, "mem", colGreen, m.memLines(innerWidth(rightW))}
+	out = append(out, renderBoxRow(cpu, mem, leftW, rightW))
 
-	procBox := m.renderProcs(width)
-	dockerBox := m.renderDocker(width)
+	// linha 2: DISK | NET
+	disk := boxSpec{3, "disk", colYellow, m.diskLines(innerWidth(leftW))}
+	net := boxSpec{4, "net", colBlue, m.netLines(innerWidth(rightW))}
+	out = append(out, renderBoxRow(disk, net, leftW, rightW))
 
-	parts := []string{
-		m.renderHeader(width),
-		topRow,
-		midRow,
-		procBox,
-		dockerBox,
-		m.renderHint(),
+	// linha 3: PROCESSOS (full)
+	proc := boxSpec{5, "proc", colPurple, m.procLines(innerWidth(width))}
+	out = append(out, drawBox(proc, width, len(proc.lines)))
+
+	// linha 4: DOCKER (full)
+	dock := boxSpec{6, "docker", colPink, m.dockerLines(innerWidth(width))}
+	out = append(out, drawBox(dock, width, len(dock.lines)))
+
+	out = append(out, m.renderHint())
+	return strings.Join(out, "\n")
+}
+
+func (m DashboardModel) renderTopline(width int) string {
+	s := m.snap
+	name := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colPink)).Render("paterna")
+	host := lipgloss.NewStyle().Foreground(lipgloss.Color(colText)).Render(orDash(s.Hostname))
+	os := lipgloss.NewStyle().Foreground(lipgloss.Color(colDim)).Render(orDash(s.OS))
+	left := name + " " + host + " " + dim("· "+os)
+
+	clock := time.Now().Format("15:04:05")
+	right := dim("up "+fmtUptime(s.Uptime)+" · ") +
+		lipgloss.NewStyle().Foreground(lipgloss.Color(colText)).Render(clock) +
+		dim(" · "+displayVersion())
+
+	return " " + alignRow(left, right, width-2)
+}
+
+func (m DashboardModel) renderHint() string {
+	return dim("  d/enter containers · q sair")
+}
+
+// ============================ CPU ============================
+
+func (m DashboardModel) cpuLines(inner int) []string {
+	s := m.snap
+	var lines []string
+
+	// medidor total + gráfico de área
+	lines = append(lines, meterRow("CPU", s.CPUTotal, inner))
+	graph := areaGraph(m.cpuHist, inner, 4)
+	lines = append(lines, graph...)
+	lines = append(lines, "")
+
+	// grade de cores em colunas
+	lines = append(lines, coreGrid(s.CPUPerCore, inner)...)
+
+	// load average
+	lines = append(lines, "")
+	lines = append(lines, dim("load avg ")+
+		valStyle(fmt.Sprintf("%.2f", s.Load1))+dim("  ")+
+		valStyle(fmt.Sprintf("%.2f", s.Load5))+dim("  ")+
+		valStyle(fmt.Sprintf("%.2f", s.Load15)))
+
+	return lines
+}
+
+func coreGrid(cores []float64, inner int) []string {
+	if len(cores) == 0 {
+		return []string{dim("(sem dados de cpu)")}
 	}
-	return strings.Join(parts, "\n")
-}
 
-func (m DashboardModel) renderHeader(width int) string {
-	s := m.snap
-	bold := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colPink))
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colDim))
+	const cell = 24
+	cols := inner / cell
+	if cols < 1 {
+		cols = 1
+	}
+	if cols > 4 {
+		cols = 4
+	}
+	rows := (len(cores) + cols - 1) / cols
 
-	left := bold.Render("Paterna") + dim.Render(" · "+orDash(s.Hostname)+" · "+orDash(s.OS))
-
-	right := dim.Render(fmt.Sprintf("up %s · load %.2f %.2f %.2f · %s",
-		fmtUptime(s.Uptime), s.Load1, s.Load5, s.Load15, displayVersion()))
-
-	return alignRow(left, right, width)
-}
-
-func (m DashboardModel) renderCPU(width int) string {
-	s := m.snap
-	inner := innerWidth(width)
-
-	var b strings.Builder
-	b.WriteString(labeledBar("total", s.CPUTotal, inner, pctColor(s.CPUTotal)))
-	b.WriteString("\n")
-	b.WriteString(sparkline(m.cpuHist, inner, pctColor(s.CPUTotal)))
-	b.WriteString("\n\n")
-
-	// cores em duas colunas
-	half := (inner - 2) / 2
-	cores := s.CPUPerCore
-	rows := (len(cores) + 1) / 2
+	out := make([]string, 0, rows)
 	for r := 0; r < rows; r++ {
-		line := coreCell(r, cores, half)
-		if r+rows < len(cores) {
-			line += "  " + coreCell(r+rows, cores, half)
+		var parts []string
+		for c := 0; c < cols; c++ {
+			i := c*rows + r
+			if i >= len(cores) {
+				parts = append(parts, strings.Repeat(" ", cell-2))
+				continue
+			}
+			parts = append(parts, coreCell(i, cores[i], cell-2))
 		}
-		b.WriteString(line + "\n")
+		out = append(out, strings.Join(parts, "  "))
 	}
-
-	return box("CPU", strings.TrimRight(b.String(), "\n"), width, colTitle)
+	return out
 }
 
-func coreCell(i int, cores []float64, width int) string {
-	if i >= len(cores) {
-		return strings.Repeat(" ", width)
-	}
-	label := fmt.Sprintf("c%-2d", i)
-	barW := width - len(label) - 6
+func coreCell(i int, pct float64, width int) string {
+	label := dim(fmt.Sprintf("c%-2d", i))
+	val := pctStyle(pct).Render(fmt.Sprintf("%4.0f%%", pct))
+	barW := width - 3 - 6
 	if barW < 3 {
 		barW = 3
 	}
-	bar := miniBar(cores[i], barW, pctColor(cores[i]))
-	val := fmt.Sprintf("%4.0f%%", cores[i])
-	return label + bar + val
+	return label + gradMeter(pct, barW) + " " + val
 }
 
-func (m DashboardModel) renderMem(width int) string {
-	s := m.snap
-	inner := innerWidth(width)
+// ============================ MEM ============================
 
-	var b strings.Builder
-	b.WriteString(labeledBar("ram", s.MemPercent, inner, pctColor(s.MemPercent)))
-	b.WriteString("\n")
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colDim))
-	b.WriteString(dim.Render(fmt.Sprintf("%s / %s", fmtBytes(s.MemUsed), fmtBytes(s.MemTotal))))
-	b.WriteString("\n")
-	b.WriteString(sparkline(m.memHist, inner, pctColor(s.MemPercent)))
-	b.WriteString("\n\n")
+func (m DashboardModel) memLines(inner int) []string {
+	s := m.snap
+	var lines []string
+
+	lines = append(lines, meterRow("RAM", s.MemPercent, inner))
+	lines = append(lines, dim("  "+fmtBytes(s.MemUsed))+dim(" / ")+valStyle(fmtBytes(s.MemTotal)))
+	lines = append(lines, areaGraph(m.memHist, inner, 3)...)
+	lines = append(lines, "")
 
 	swapPct := 0.0
 	if s.SwapTotal > 0 {
 		swapPct = float64(s.SwapUsed) / float64(s.SwapTotal) * 100.0
 	}
-	b.WriteString(labeledBar("swp", swapPct, inner, colCyan))
-	b.WriteString("\n")
-	b.WriteString(dim.Render(fmt.Sprintf("%s / %s", fmtBytes(s.SwapUsed), fmtBytes(s.SwapTotal))))
+	lines = append(lines, meterRow("SWP", swapPct, inner))
+	lines = append(lines, dim("  "+fmtBytes(s.SwapUsed))+dim(" / ")+valStyle(fmtBytes(s.SwapTotal)))
 
-	return box("MEM", b.String(), width, colTitle)
+	return lines
 }
 
-func (m DashboardModel) renderDisks(width int) string {
-	inner := innerWidth(width)
-	var b strings.Builder
+// ============================ DISK ============================
 
+func (m DashboardModel) diskLines(inner int) []string {
 	if len(m.snap.Disks) == 0 {
-		b.WriteString(lipgloss.NewStyle().Faint(true).Render("(sem dados de disco)"))
+		return []string{dim("(sem dados de disco)")}
 	}
+	var lines []string
 	for _, d := range m.snap.Disks {
-		label := truncate(d.Path, 10)
-		b.WriteString(labeledBar(label, d.UsedPercent, inner, pctColor(d.UsedPercent)))
-		b.WriteString("\n")
-		dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colDim))
-		b.WriteString(dim.Render(fmt.Sprintf("  %s / %s", fmtBytes(d.Used), fmtBytes(d.Total))))
-		b.WriteString("\n")
+		head := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colText)).
+			Render(truncate(d.Path, 14))
+		used := valStyle(fmtBytes(d.Used) + " / " + fmtBytes(d.Total))
+		lines = append(lines, alignVis(head, used, inner))
+		lines = append(lines, meterRow("", d.UsedPercent, inner))
 	}
-
-	return box("DISK", strings.TrimRight(b.String(), "\n"), width, colTitle)
+	return lines
 }
 
-func (m DashboardModel) renderNet(width int) string {
+// ============================ NET ============================
+
+func (m DashboardModel) netLines(inner int) []string {
 	s := m.snap
-	down := lipgloss.NewStyle().Foreground(lipgloss.Color(colGreen)).Bold(true)
-	up := lipgloss.NewStyle().Foreground(lipgloss.Color(colYellow)).Bold(true)
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colDim))
+	down := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colGreen))
+	up := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colYellow))
 
-	body := strings.Join([]string{
-		down.Render("↓ ") + dim.Render("download  ") + down.Render(fmtRate(s.NetRecvRate)),
-		up.Render("↑ ") + dim.Render("upload    ") + up.Render(fmtRate(s.NetSentRate)),
-	}, "\n\n")
-
-	return box("NET", body, width, colTitle)
+	var lines []string
+	lines = append(lines, alignVis(down.Render("▼ download"), down.Render(fmtRate(s.NetRecvRate)), inner))
+	lines = append(lines, autoGraph(m.recvHist, inner, 2, colGreen)...)
+	lines = append(lines, "")
+	lines = append(lines, alignVis(up.Render("▲ upload"), up.Render(fmtRate(s.NetSentRate)), inner))
+	lines = append(lines, autoGraph(m.sentHist, inner, 2, colYellow)...)
+	return lines
 }
 
-func (m DashboardModel) renderProcs(width int) string {
-	inner := innerWidth(width)
-	dim := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colDim))
+// ============================ PROC ============================
 
-	nameW := inner - 7 - 8 - 12
+func (m DashboardModel) procLines(inner int) []string {
+	head := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colDim))
+	nameW := inner - 8 - 9 - 11
 	if nameW < 8 {
 		nameW = 8
 	}
 
-	header := dim.Render(
-		padRight("PID", 7) + padRight("NAME", nameW) + padRight("CPU%", 8) + "MEM",
-	)
+	header := head.Render(padRight("PID", 8) + padRight("NAME", nameW) +
+		padRight("CPU%", 9) + "MEM")
+	lines := []string{header}
 
 	limit := m.procRows()
-	lines := []string{header}
 	for i, p := range m.snap.Procs {
 		if i >= limit {
 			break
 		}
-		row := padRight(fmt.Sprintf("%d", p.PID), 7) +
-			padRight(truncate(p.Name, nameW-1), nameW) +
-			padRight(fmt.Sprintf("%.1f", p.CPU), 8) +
-			fmt.Sprintf("%.0f MB", p.MemMB)
+		row := dim(padRight(fmt.Sprintf("%d", p.PID), 8)) +
+			lipgloss.NewStyle().Foreground(lipgloss.Color(colText)).Render(padRight(truncate(p.Name, nameW-1), nameW)) +
+			pctStyle(p.CPU).Render(padRight(fmt.Sprintf("%.1f", p.CPU), 9)) +
+			valStyle(fmt.Sprintf("%.0f MB", p.MemMB))
 		lines = append(lines, row)
 	}
-
-	return box("PROCESSOS", strings.Join(lines, "\n"), width, colTitle)
+	return lines
 }
 
-// procRows decide quantas linhas de processo cabem dado o resto do layout.
 func (m DashboardModel) procRows() int {
-	rows := m.height - 30
+	rows := m.height - 34
 	if rows < 4 {
 		rows = 4
 	}
@@ -281,127 +320,231 @@ func (m DashboardModel) procRows() int {
 	return rows
 }
 
-func (m DashboardModel) renderDocker(width int) string {
+// ============================ DOCKER ============================
+
+func (m DashboardModel) dockerLines(inner int) []string {
 	if m.dockerErr != nil {
-		body := lipgloss.NewStyle().Foreground(lipgloss.Color(colRed)).
-			Render("docker indisponível: " + m.dockerErr.Error())
-		return box("DOCKER", body, width, colPink)
+		return []string{lipgloss.NewStyle().Foreground(lipgloss.Color(colRed)).
+			Render("docker indisponível: " + m.dockerErr.Error())}
 	}
 
 	up := 0
 	for _, c := range m.containers {
-		if strings.HasPrefix(strings.ToLower(c.Status), "up") {
+		if isUp(c.Status) {
 			up++
 		}
 	}
 
-	dim := lipgloss.NewStyle().Foreground(lipgloss.Color(colDim))
-	summary := fmt.Sprintf("%s%d up%s · %d total   %s",
-		lipgloss.NewStyle().Foreground(lipgloss.Color(colGreen)).Render("● "),
-		up,
-		"",
-		len(m.containers),
-		dim.Render("[d/enter] gerenciar containers"),
-	)
+	summary := lipgloss.NewStyle().Foreground(lipgloss.Color(colGreen)).Render("● ") +
+		valStyle(fmt.Sprintf("%d", up)) + dim(" up · ") +
+		valStyle(fmt.Sprintf("%d", len(m.containers))) + dim(" total")
+	hint := dim("[d/enter] gerenciar")
+	lines := []string{alignVis(summary, hint, inner)}
 
-	lines := []string{summary}
 	for i, c := range m.containers {
-		if i >= 4 {
-			lines = append(lines, dim.Render(fmt.Sprintf("  … +%d", len(m.containers)-4)))
+		if i >= 5 {
+			lines = append(lines, dim(fmt.Sprintf("  … +%d", len(m.containers)-5)))
 			break
 		}
-		dot := lipgloss.NewStyle().Foreground(lipgloss.Color(colRed)).Render("●")
-		if strings.HasPrefix(strings.ToLower(c.Status), "up") {
-			dot = lipgloss.NewStyle().Foreground(lipgloss.Color(colGreen)).Render("●")
+		dotColor := colRed
+		if isUp(c.Status) {
+			dotColor = colGreen
 		}
-		lines = append(lines, fmt.Sprintf("  %s %s %s",
-			dot, padRight(truncate(c.Name, 24), 24), dim.Render(truncate(c.Status, 30))))
+		dot := lipgloss.NewStyle().Foreground(lipgloss.Color(dotColor)).Render("●")
+		name := lipgloss.NewStyle().Foreground(lipgloss.Color(colText)).Render(padRight(truncate(c.Name, 26), 26))
+		lines = append(lines, "  "+dot+" "+name+dim(truncate(c.Status, inner-32)))
 	}
-
-	return box("DOCKER", strings.Join(lines, "\n"), width, colPink)
+	return lines
 }
 
-func (m DashboardModel) renderHint() string {
-	return lipgloss.NewStyle().Faint(true).Render(
-		"  d/enter: containers  ·  q: sair",
-	)
+// ============================ caixas ============================
+
+type boxSpec struct {
+	num    int
+	title  string
+	accent string
+	lines  []string
 }
 
-// --- helpers de render ---
+// renderBoxRow desenha duas caixas lado a lado com a MESMA altura, garantindo
+// que as bordas fiquem alinhadas.
+func renderBoxRow(left, right boxSpec, leftW, rightW int) string {
+	h := max(len(left.lines), len(right.lines))
+	l := drawBox(left, leftW, h)
+	r := drawBox(right, rightW, h)
+	return lipgloss.JoinHorizontal(lipgloss.Top, l, r)
+}
 
-func box(title, body string, width int, titleColor string) string {
-	inner := innerWidth(width)
-	t := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(titleColor)).Render(" " + title + " ")
+var superscripts = []rune("⁰¹²³⁴⁵⁶⁷⁸⁹")
 
-	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(colBorder)).
-		Width(inner).
-		Padding(0, 1)
+// drawBox desenha a caixa com título embutido na borda superior (estilo btop)
+// e altura de conteúdo fixa (contentH linhas).
+func drawBox(b boxSpec, width, contentH int) string {
+	innerW := width - 2
+	bs := lipgloss.NewStyle().Foreground(lipgloss.Color(colBorder))
 
-	return style.Render(t + "\n" + body)
+	num := ""
+	if b.num >= 0 && b.num < len(superscripts) {
+		num = string(superscripts[b.num])
+	}
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(b.accent)).
+		Render(num + b.title)
+	titleW := lipgloss.Width(title)
+
+	dashes := innerW - 1 - titleW
+	if dashes < 0 {
+		dashes = 0
+	}
+	top := bs.Render("╭─") + title + bs.Render(strings.Repeat("─", dashes)+"╮")
+	bottom := bs.Render("╰" + strings.Repeat("─", innerW) + "╯")
+
+	rows := make([]string, 0, contentH+2)
+	rows = append(rows, top)
+	for i := 0; i < contentH; i++ {
+		body := ""
+		if i < len(b.lines) {
+			body = b.lines[i]
+		}
+		rows = append(rows, bs.Render("│")+padVis(" "+body, innerW)+bs.Render("│"))
+	}
+	rows = append(rows, bottom)
+	return strings.Join(rows, "\n")
 }
 
 func innerWidth(width int) int {
-	w := width - 4 // borda (2) + padding (2)
+	w := width - 4 // 2 bordas + 1 espaço de padding interno (esq) + 1 folga (dir)
 	if w < 10 {
 		w = 10
 	}
 	return w
 }
 
-// labeledBar: "label [████░░░░] 42%"
-func labeledBar(label string, pct float64, width int, color string) string {
-	lbl := padRight(label, 6)
-	tail := 6 // espaço pra " 100%"
-	barW := width - len(lbl) - tail
+// ============================ medidores / gráficos ============================
+
+// meterRow: "LABEL ▕████████▏  42%" com gradiente e valor à direita.
+func meterRow(label string, pct float64, inner int) string {
+	lbl := ""
+	lblW := 0
+	if label != "" {
+		lbl = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colDim)).Render(padRight(label, 4))
+		lblW = 4
+	}
+	valTxt := fmt.Sprintf("%4.0f%%", pct)
+	val := pctStyle(pct).Render(valTxt)
+
+	barW := inner - lblW - len(valTxt) - 2
 	if barW < 4 {
 		barW = 4
 	}
-	return lbl + miniBar(pct, barW, color) + fmt.Sprintf("%4.0f%%", pct)
+	return lbl + gradMeter(pct, barW) + " " + val
 }
 
-func miniBar(pct float64, width int, color string) string {
+// gradMeter desenha uma barra preenchida com gradiente verde→amarelo→vermelho
+// ao longo da extensão (não só pela cor final), como no btop.
+func gradMeter(pct float64, width int) string {
 	if pct < 0 {
 		pct = 0
 	}
 	if pct > 100 {
 		pct = 100
 	}
-	filled := int(pct / 100.0 * float64(width))
+	filled := int(pct/100.0*float64(width) + 0.5)
 	filled = clamp(filled, 0, width)
 
-	full := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).
-		Render(strings.Repeat("█", filled))
-	empty := lipgloss.NewStyle().Foreground(lipgloss.Color("#2A2A35")).
-		Render(strings.Repeat("░", width-filled))
-	return "[" + full + empty + "] "
+	var b strings.Builder
+	for i := 0; i < width; i++ {
+		if i < filled {
+			frac := 0.0
+			if width > 1 {
+				frac = float64(i) / float64(width-1)
+			}
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(gradHex(frac))).Render("█"))
+		} else {
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(colEmpty)).Render("░"))
+		}
+	}
+	return b.String()
 }
 
-var sparkRunes = []rune("▁▂▃▄▅▆▇█")
+var blockLevels = []rune(" ▁▂▃▄▅▆▇█")
 
-func sparkline(hist []float64, width int, color string) string {
-	if width < 1 {
-		return ""
+// areaGraph desenha um gráfico de área de `height` linhas, escala 0-100,
+// cada coluna colorida pelo seu valor (gradiente).
+func areaGraph(hist []float64, width, height int) []string {
+	return scaledGraph(hist, width, height, 100, "")
+}
+
+// autoGraph: igual ao areaGraph mas escala pelo máximo da janela (para taxas
+// de rede que não são 0-100) e usa cor fixa.
+func autoGraph(hist []float64, width, height int, color string) []string {
+	maxV := 1.0
+	for _, v := range hist {
+		if v > maxV {
+			maxV = v
+		}
 	}
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+	return scaledGraph(hist, width, height, maxV, color)
+}
+
+func scaledGraph(hist []float64, width, height int, scale float64, fixedColor string) []string {
+	lines := make([]string, height)
+	if width < 1 || height < 1 {
+		return lines
+	}
 
 	data := hist
 	if len(data) > width {
 		data = data[len(data)-width:]
 	}
-
-	var b strings.Builder
 	pad := width - len(data)
-	for i := 0; i < pad; i++ {
-		b.WriteRune(' ')
+
+	for row := 0; row < height; row++ {
+		// row 0 é o topo; cada linha cobre uma faixa de 8 "oitavos"
+		var b strings.Builder
+		for i := 0; i < pad; i++ {
+			b.WriteRune(' ')
+		}
+		for _, v := range data {
+			ratio := v / scale
+			if ratio < 0 {
+				ratio = 0
+			}
+			if ratio > 1 {
+				ratio = 1
+			}
+			totalEighths := ratio * float64(height) * 8
+			rowFromBottom := height - 1 - row
+			cellEighths := totalEighths - float64(rowFromBottom*8)
+			level := clamp(int(cellEighths+0.0), 0, 8)
+			r := blockLevels[level]
+
+			color := fixedColor
+			if color == "" {
+				color = gradHex(v / 100.0)
+			}
+			if r == ' ' {
+				b.WriteRune(' ')
+			} else {
+				b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(string(r)))
+			}
+		}
+		lines[row] = b.String()
 	}
-	for _, v := range data {
-		idx := int(v / 100.0 * float64(len(sparkRunes)-1))
-		idx = clamp(idx, 0, len(sparkRunes)-1)
-		b.WriteRune(sparkRunes[idx])
-	}
-	return style.Render(b.String())
+	return lines
+}
+
+// ============================ helpers de cor/estilo ============================
+
+func dim(s string) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(colDim)).Render(s)
+}
+
+func valStyle(s string) string {
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colText)).Render(s)
+}
+
+func pctStyle(pct float64) lipgloss.Style {
+	return lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(pctColor(pct)))
 }
 
 func pctColor(pct float64) string {
@@ -413,6 +556,62 @@ func pctColor(pct float64) string {
 	default:
 		return colGreen
 	}
+}
+
+// gradHex interpola verde→amarelo→vermelho. frac 0=verde, .5=amarelo, 1=vermelho.
+func gradHex(frac float64) string {
+	if frac < 0 {
+		frac = 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
+	var r, g, bl int
+	if frac < 0.5 {
+		t := frac / 0.5
+		r = lerp(0x00, 0xFF, t)
+		g = lerp(0xC8, 0xB0, t)
+		bl = lerp(0x64, 0x20, t)
+	} else {
+		t := (frac - 0.5) / 0.5
+		r = lerp(0xFF, 0xFF, t)
+		g = lerp(0xB0, 0x57, t)
+		bl = lerp(0x20, 0x57, t)
+	}
+	return fmt.Sprintf("#%02X%02X%02X", r, g, bl)
+}
+
+func lerp(a, b int, t float64) int {
+	return a + int(float64(b-a)*t+0.5)
+}
+
+// ============================ helpers de largura ============================
+
+// padVis preenche/corta uma string (que pode ter ANSI) até n colunas visuais.
+func padVis(s string, n int) string {
+	w := lipgloss.Width(s)
+	if w == n {
+		return s
+	}
+	if w < n {
+		return s + strings.Repeat(" ", n-w)
+	}
+	return s // não corta conteúdo estilizado; deixa transbordar (raro)
+}
+
+// alignVis alinha left à esquerda e right à direita dentro de width colunas visuais.
+func alignVis(left, right string, width int) string {
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// ============================ formatação ============================
+
+func isUp(status string) bool {
+	return strings.HasPrefix(strings.ToLower(status), "up")
 }
 
 func orDash(s string) string {
