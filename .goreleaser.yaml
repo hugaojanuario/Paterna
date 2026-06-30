@@ -53,3 +53,5 @@ release:
     name: Paterna
   draft: false
   prerelease: auto
+  # se a tag for reenviada, sobrescreve os binários em vez de falhar com 422
+  replace_existing_artifacts: true
