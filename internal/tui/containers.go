@@ -84,7 +84,7 @@ func (m ContainersModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "esc":
-			return NewWelcomeModel(), nil
+			return NewDashboardModel(), nil
 
 		case "up", "k":
 			if len(m.rows) == 0 {

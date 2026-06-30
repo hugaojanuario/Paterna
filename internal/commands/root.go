@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/hugaojanuario/Paterna/internal/tui"
@@ -10,29 +9,16 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "paterna",
-	Short: "Paterna — observabilidade e gerenciamento de containers Docker",
-	Long: `Paterna abre o TUI quando executado sem argumentos.
-Na primeira vez rode 'paterna init' para criar sua conta admin.`,
+	Short: "Paterna — monitor de sistema e containers Docker no terminal",
+	Long: `Paterna é um monitor de sistema estilo btop direto no terminal.
+Mostra CPU, memória, disco, rede, processos e seus containers Docker.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !isInitialized() {
-			fmt.Println("Paterna ainda não foi inicializado neste computador.")
-			fmt.Println("Rode primeiro: paterna init")
-			return nil
-		}
-
-		if !validateToken() {
-			fmt.Println("Você não está autenticado ou sua sessão expirou.")
-			fmt.Println("Rode: paterna auth --login")
-			return nil
-		}
-
 		return tui.Run()
 	},
 }
 
 func Execute() {
-	err := rootCmd.Execute()
-	if err != nil {
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }

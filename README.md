@@ -4,9 +4,9 @@
 </p>
 
 
-Docker observability and container management platform — CLI/TUI escrito em Go.
+Monitor de sistema e containers Docker no terminal — TUI estilo [btop](https://github.com/aristocratos/btop), escrito em Go.
 
-Paterna é uma ferramenta de terminal para monitorar e gerenciar containers Docker. Roda um daemon em background no servidor que coleta métricas, dispara alertas e expõe uma API interna via Unix socket. A interface é um TUI interativo construído com Bubble Tea.
+Paterna mostra CPU (por core), memória, swap, disco, rede e os processos mais pesados da máquina onde roda, além de um painel Docker com seus containers e stream de logs em tempo real. É 100% CLI: um binário, sem servidor, sem login, sem banco.
 
 ---
 
@@ -18,7 +18,7 @@ Paterna é uma ferramenta de terminal para monitorar e gerenciar containers Dock
 curl -fsSL https://raw.githubusercontent.com/hugaojanuario/Paterna/main/install.sh | sh
 ```
 
-O script detecta o sistema operacional e a arquitetura, baixa o binário da última release e instala em `/usr/local/bin/paterna`. Se não houver permissão de `sudo`, instala em `~/.local/bin/paterna`.
+O script detecta o sistema operacional e a arquitetura, baixa o binário da última release e instala em `/usr/local/bin/paterna`. Sem permissão de `sudo`, instala em `~/.local/bin/paterna`.
 
 ### Build local
 
@@ -27,48 +27,58 @@ make build      # compila e gera ./paterna
 make install    # copia para ~/.local/bin/paterna
 ```
 
-**Pré-requisitos:** Go 1.23+, Docker rodando localmente.
+**Pré-requisitos:** Go 1.26+. Docker é opcional — sem ele, o painel Docker apenas avisa que está indisponível; o resto do monitor funciona normalmente.
 
 ---
 
 ## Uso
 
 ```sh
-paterna               # abre o TUI interativo
-paterna init          # primeira execução: cria admin e sobe o daemon
-paterna start         # sobe o daemon (docker start paterna-daemon)
-paterna stop          # para o daemon (docker stop paterna-daemon)
-paterna reload        # reinicia o daemon
-paterna status        # mostra se o daemon está rodando
-paterna logs          # mostra logs do daemon
-paterna version       # versão, commit e data do build
-paterna --help        # lista todos os comandos
+paterna           # abre o dashboard de monitoramento
+paterna version   # versão, commit e data do build
+paterna --help    # lista os comandos
 ```
+
+### Teclas
+
+**Dashboard**
+
+| Tecla | Ação |
+|-------|------|
+| `d` / `enter` | Abre o gerenciador de containers Docker |
+| `q` / `ctrl+c` | Sair |
+
+**Containers** (gerenciador)
+
+| Tecla | Ação |
+|-------|------|
+| `↑↓` / `jk` | Navegar |
+| `enter` | Detalhes + logs em tempo real |
+| `s` / `x` / `r` | start / stop / restart |
+| `u` | Atualizar |
+| `esc` | Voltar ao dashboard |
 
 ---
 
 ## Arquitetura
 
 ```
-usuário no terminal
-      │
-   CLI/TUI (paterna)
-      │  Unix socket (/var/run/paterna.sock)
-      ▼
-   Daemon (container Docker em background)
-      │
-  ┌───────────────┬───────────────┬───────────────┐
-  │ container-svc │  metrics-svc  │   alert-svc   │
-  └───────────────┴───────────────┴───────────────┘
-         │               │               │
-      Docker API      Prometheus       Telegram
-         │               │
-      PostgreSQL      PostgreSQL
+            paterna (binário único)
+                    │
+        ┌───────────┴───────────┐
+        ▼                       ▼
+  internal/system          internal/container
+   (gopsutil)               (Docker SDK)
+   CPU · MEM · DISK          listar · start/stop
+   NET · PROC                stats · logs stream
+        │                       │
+        └──────────┬────────────┘
+                   ▼
+            internal/tui
+       dashboard estilo btop (Bubble Tea)
 ```
 
-- **CLI** — binário `paterna` instalado no servidor. Abre o TUI e envia comandos ao daemon via Unix socket.
-- **Daemon** — roda como container Docker. Contém toda a lógica de negócio e expõe uma API HTTP interna no socket.
-- **Unix socket** — `/var/run/paterna.sock`. Comunicação local entre CLI e daemon, sem expor porta na rede.
+Tudo é local: a TUI lê as métricas da máquina via gopsutil e fala com o Docker pelo socket local. Não há processo em background, porta de rede nem autenticação.
 
 ---
 
@@ -76,15 +86,12 @@ usuário no terminal
 
 | Camada | Tecnologia |
 |--------|-----------|
-| Linguagem | Go 1.23+ |
+| Linguagem | Go 1.26+ |
 | CLI | Cobra |
 | TUI | Bubble Tea + Lip Gloss + Bubbles |
+| Métricas de sistema | gopsutil/v4 |
 | Docker | Docker SDK for Go |
-| Banco | PostgreSQL + golang-migrate |
-| Métricas | Prometheus |
-| Alertas | Telegram |
-| Infra | Docker, GitHub Actions, Terraform, Kubernetes |
-| Release | GoReleaser |
+| Release | GoReleaser + GitHub Actions |
 
 ---
 
@@ -93,26 +100,21 @@ usuário no terminal
 ```
 paterna/
 ├── cmd/
-│   └── cli/
-│       └── main.go              # entrypoint da CLI
+│   └── cli/main.go          # entrypoint
 ├── internal/
-│   ├── cli/                     # subcomandos Cobra (init, start, stop…)
+│   ├── commands/            # subcomandos Cobra (root, version)
+│   ├── system/              # coleta de métricas via gopsutil
+│   ├── container/           # serviço Docker (listar, stats, logs…)
 │   ├── tui/
-│   │   ├── app.go               # entrada do TUI
-│   │   ├── models/              # telas: menu, containers, métricas, alertas…
-│   │   └── styles/              # cores e estilos Lip Gloss
-│   ├── daemon/                  # HTTP server no Unix socket + rotas
-│   ├── container/               # handler, service, repository
-│   ├── metrics/                 # coleta de CPU/memória, histórico
-│   ├── alert/                   # regras, Telegram, histórico
-│   └── shared/                  # auth JWT, config, client socket, database
-├── db/
-│   └── migrations/              # SQL migrations numeradas
+│   │   ├── dashboard.go     # tela principal estilo btop
+│   │   ├── containers.go    # lista/ações de containers
+│   │   ├── container_details.go  # detalhes + log stream
+│   │   └── helpers.go       # helpers de render compartilhados
+│   └── version/
 ├── pkg/
-├── www/
-├── .github/
-│   └── workflows/
-│       └── release.yml          # goreleaser automático por tag
+│   ├── docker/              # cliente Docker compartilhado
+│   └── errors/              # erros sentinela
+├── .github/workflows/release.yml
 ├── .goreleaser.yaml
 ├── Makefile
 └── go.mod
@@ -127,33 +129,17 @@ make run           # roda via go run (sem compilar)
 make tidy          # go mod tidy
 make clean         # remove binário e dist/
 make release-dry   # testa goreleaser sem publicar
+go test ./...      # smoke tests
 ```
 
 ### Publicar uma release
 
-Crie uma tag `vX.Y.Z` e dê push. O workflow `.github/workflows/release.yml` executa o GoReleaser e publica os binários automaticamente.
+Crie uma tag `vX.Y.Z` e dê push. O workflow `.github/workflows/release.yml` executa o GoReleaser e publica os binários.
 
 ```sh
 git tag v0.3.0
 git push origin v0.3.0
 ```
-
----
-
-## Variáveis de Ambiente
-
-Copie `.env.example` para `.env` e preencha:
-
-```sh
-cp .env.example .env
-```
-
-| Variável | Descrição |
-|----------|-----------|
-| `DATABASE_URL` | URL de conexão PostgreSQL |
-| `JWT_SECRET` | Segredo para assinar tokens JWT |
-| `TELEGRAM_BOT_TOKEN` | Token do bot para alertas |
-| `TELEGRAM_CHAT_ID` | Chat ID para receber alertas |
 
 ---
 

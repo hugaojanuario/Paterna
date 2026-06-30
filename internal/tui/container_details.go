@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/hugaojanuario/Paterna/internal/container"
 )
 
@@ -23,6 +24,7 @@ type detailsLoadedMsg struct {
 type logStreamReadyMsg struct {
 	ch     chan string
 	cancel context.CancelFunc
+	rc     io.ReadCloser
 }
 
 type logLineMsg struct {
@@ -44,6 +46,7 @@ type ContainerDetailsModel struct {
 	logs   []string
 	logCh  chan string
 	cancel context.CancelFunc
+	logRC  io.ReadCloser
 
 	viewport viewport.Model
 	width    int
@@ -93,6 +96,7 @@ func (m ContainerDetailsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case logStreamReadyMsg:
 		m.logCh = msg.ch
 		m.cancel = msg.cancel
+		m.logRC = msg.rc
 		return m, waitForLogLine(msg.ch)
 
 	case logLineMsg:
@@ -157,6 +161,11 @@ func (m *ContainerDetailsModel) stopStream() {
 	if m.cancel != nil {
 		m.cancel()
 		m.cancel = nil
+	}
+	// fecha o reader pra desbloquear o scanner que está em leitura
+	if m.logRC != nil {
+		m.logRC.Close()
+		m.logRC = nil
 	}
 }
 
@@ -282,7 +291,7 @@ func startLogStream(id string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 
-		rc, err := apiClient.StreamLogs(ctx, id)
+		rc, err := container.StreamContainerLogs(id)
 		if err != nil {
 			cancel()
 			return logStreamErrMsg{err: err}
@@ -291,33 +300,31 @@ func startLogStream(id string) tea.Cmd {
 		ch := make(chan string, 64)
 		go pumpLogs(ctx, rc, ch)
 
-		return logStreamReadyMsg{ch: ch, cancel: cancel}
+		return logStreamReadyMsg{ch: ch, cancel: cancel, rc: rc}
 	}
 }
 
-// pumpLogs lê SSE do daemon (data: <linha>\n\n), descarta prefixo
-// e empurra cada linha no canal até EOF/cancel
+// pumpLogs faz o demux do stream multiplexado do Docker (stdout+stderr) e
+// empurra cada linha no canal até EOF/cancel.
 func pumpLogs(ctx context.Context, rc io.ReadCloser, ch chan<- string) {
 	defer close(ch)
-	defer rc.Close()
 
-	scanner := bufio.NewScanner(rc)
+	pr, pw := io.Pipe()
+	go func() {
+		defer pw.Close()
+		stdcopy.StdCopy(pw, pw, rc)
+	}()
+
+	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if line == "" {
-			continue
-		}
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		payload := strings.TrimPrefix(line, "data: ")
 
 		select {
 		case <-ctx.Done():
 			return
-		case ch <- payload:
+		case ch <- line:
 		}
 	}
 }

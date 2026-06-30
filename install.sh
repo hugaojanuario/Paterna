@@ -102,4 +102,4 @@ esac
 
 printf '\n'
 "$INSTALL_DIR/$BIN_NAME" version || true
-printf '\nRode: %s init\n' "$BIN_NAME"
+printf '\nRode: %s\n' "$BIN_NAME"
